@@ -31,12 +31,12 @@ class BluetoothManager: NSObject {
         let service = CBMutableService(type: serviceUUID, primary: true)
         let requestCharacteristic = CBMutableCharacteristic(
             type: requestCharacteristicUUID,
-            properties: CBCharacteristicProperties.WriteWithoutResponse,
+            properties: CBCharacteristicProperties.Write,
             value: nil,
             permissions: CBAttributePermissions.Writeable)
         responseCharacteristic = CBMutableCharacteristic(
             type: responseCharacteristicUUID,
-            properties: CBCharacteristicProperties.Notify,
+            properties: CBCharacteristicProperties.Read,
             value: nil,
             permissions: CBAttributePermissions.Readable)
         service.characteristics = [requestCharacteristic, responseCharacteristic]
@@ -57,36 +57,34 @@ class BluetoothManager: NSObject {
         }
     }
     
-    private func queueResponse() {
+    private func queueResponse(request: CBATTRequest) {
         log("queueResponse")
         
-//        sendResponse()
-        sendResponseDelayed()
+//        sendResponse(request)
+        sendResponseDelayed(request)
     }
     
-    private func sendResponse() {
+    private func sendResponse(request: CBATTRequest) {
         log("sendResponse")
-        let responseData = pendingResponse.dataUsingEncoding(NSUTF8StringEncoding, allowLossyConversion: false)
-        let isSuccess = peripheralManager.updateValue(responseData, forCharacteristic: responseCharacteristic, onSubscribedCentrals: nil)
-        log("isSuccess \(isSuccess)")
-        if isSuccess {
-            pendingResponse = ""
-        }
+        request.value = pendingResponse.dataUsingEncoding(NSUTF8StringEncoding, allowLossyConversion: false)
+        peripheralManager.respondToRequest(request, withResult: CBATTError.Success)
+        pendingResponse = ""
     }
     
-    private func sendResponseDelayed() {
+    private func sendResponseDelayed(request: CBATTRequest) {
         log("sendResponseDelayed")
-        let delay = calculateDelay()
+        let delay = 1.0 // calculateDelay()
         let delayStr = String(format: "%.3f", delay)
         log("will send response in \(delayStr) secs")
         let sendTime = dispatch_time(DISPATCH_TIME_NOW, Int64(delay * Double(NSEC_PER_SEC)))
         dispatch_after(sendTime, dispatch_get_main_queue()) {
-            self.sendResponse()
+            self.sendResponse(request)
         }
     }
     
     private func calculateDelay() -> Double {
         log("calculateDelay")
+        
         let now = NSDate()
         var ti = now.timeIntervalSinceReferenceDate
         
@@ -155,10 +153,6 @@ extension BluetoothManager: CBPeripheralManagerDelegate {
         log(message)
     }
     
-    func peripheralManager(peripheral: CBPeripheralManager!, central: CBCentral!, didSubscribeToCharacteristic characteristic: CBCharacteristic!) {
-        log("peripheralManager didSubscribeToCharacteristic \(nameFromUUID(characteristic.UUID))")
-    }
-    
     func peripheralManager(peripheral: CBPeripheralManager!, didReceiveWriteRequests requests: [AnyObject]!) {
         log("peripheralManager didReceiveWriteRequests \(requests.count)")
         if requests.count == 0 {
@@ -166,13 +160,22 @@ extension BluetoothManager: CBPeripheralManagerDelegate {
         }
         let request = requests[0] as! CBATTRequest
         pendingResponse = NSString(data: request.value, encoding: NSUTF8StringEncoding)! as String
-        queueResponse()
+        peripheralManager.respondToRequest(request, withResult: CBATTError.Success)
     }
     
-    func peripheralManagerIsReadyToUpdateSubscribers(peripheral: CBPeripheralManager!) {
-        log("peripheralManagerIsReadyToUpdateSubscribers")
-        dispatch_async(dispatch_get_main_queue()) {
-            self.sendResponse()
+    func peripheralManager(peripheral: CBPeripheralManager!, didReceiveReadRequest request: CBATTRequest!) {
+        let serviceUUID = request.characteristic.service.UUID
+        let serviceName = nameFromUUID(serviceUUID)
+        let characteristicUUID = request.characteristic.UUID
+        let characteristicName = nameFromUUID(characteristicUUID)
+        log("peripheralManager didReceiveReadRequest \(serviceName) \(characteristicName)")
+        if !pendingResponse.isEmpty {
+            dispatch_async(dispatch_get_main_queue()) {
+                self.queueResponse(request)
+            }
+        } else {
+            log("no pending responses")
+            peripheralManager.respondToRequest(request, withResult: CBATTError.RequestNotSupported)
         }
     }
 
